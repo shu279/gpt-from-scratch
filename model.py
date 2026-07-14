@@ -16,41 +16,77 @@ class CausalSelfAttention(nn.Module):
         self.Wv = nn.Linear(C,C)
         self.Wo = nn.Linear(C,C)
 
-    '''
-    Simple self-attention with no causal mask & MHA
-    def forward(self,x):
+    # Simple self-attention
+    def plain_forward(self,x):
         B, T, C = x.size()
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
         score = q@k.transpose(-1,-2)
         return F.softmax(score,dim=-1)@v
-    '''
 
+    # Added causal mask, MHA, RoPE
     def forward(self,x):
-        #x = embedding
+        # x = embedding
         B, T, C = x.size()
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
 
-        #Divide embedding dimension (B,T,C) --> (B,h,T,C//h)
+        # Divide embedding dimension (B,T,C) --> (B,h,T,C//h)
         head_size = C // self.h
         q = q.view(B, T, self.h, head_size).transpose(1, 2)
         k = k.view(B, T, self.h, head_size).transpose(1, 2)
         v = v.view(B, T, self.h, head_size).transpose(1, 2)
 
+        q,k = self.RoPE(q,k) # Rotate q/k
+
         score = q@k.transpose(-1,-2) # (B, h, Tq, Tk)
         score /= (head_size ** 0.5) # Make var = 1 so big C won't get big fluctuation
 
-        #Causal mask
+        # Causal mask
         mask = torch.ones(T, T, dtype=torch.bool, device=x.device) #(1, 1, Tq, Tk)
         mask = torch.tril(mask)
         score = score.masked_fill(~mask,float("-inf"))
 
-        c = F.softmax(score,dim=-1)@v #Combine across key positions (B,h,Tq,C//h)
+        c = F.softmax(score,dim=-1)@v # Combine across key positions (B,h,Tq,C//h)
 
-        #Connect head dimensions
+        # Connect head dimensions
         c = c.transpose(1, 2)
         c = c.contiguous().view(B, T, C)
 
-        return self.Wo(c) #Combine across embedding
+        return self.Wo(c) # Combine across embedding
+
+
+    # Rotate q/k according to token position -> learn relationship by relative position
+    def RoPE(self,q,k):
+        B, h, T, head_size = q.shape
+        assert head_size % 2 == 0
+
+        # Pair-up each embedding (q0, q1), (q2, q3),...
+        q_even, q_odd = q[...,0::2], q[...,1::2] # (B, h, T, head_size/2)
+        k_even, k_odd = k[...,0::2], k[...,1::2]
+
+        # Frequency = rotation angle per 1 token
+        # Change frequency between embedding pairs
+        # pair 0 -> 1.00 rad per position --> sensitive for fine/local s-t change
+        # pair 1 -> 0.10 rad per position
+        # pair 2 -> 0.01 rad per position --> sensitive for coarse s-t change
+
+        pos = torch.arange(0, T, device = q.device)
+        pair_idx = torch.arange(0, head_size//2, device = q.device)
+        freq = 1 / (10000 ** (2 * pair_idx / head_size))
+
+        angles = pos[:, None] * freq[None, :] # Broadcast and element-wise multiply --> (T, head_size/2)
+        angles = angles[None, None, :, :]
+
+        # Rotate q/k along token position
+        q_even_new = q_even * torch.cos(angles) - q_odd * torch.sin(angles)
+        q_odd_new = q_even * torch.sin(angles) + q_odd * torch.cos(angles)
+        q_rotated = torch.stack((q_even_new, q_odd_new), dim=-1).flatten(-2)
+
+        k_even_new = k_even * torch.cos(angles) - k_odd * torch.sin(angles)
+        k_odd_new = k_even * torch.sin(angles) + k_odd * torch.cos(angles)
+        k_rotated = torch.stack((k_even_new, k_odd_new), dim=-1).flatten(-2)
+
+        return q_rotated, k_rotated
+
 
 class MultiLayerPerceptron(nn.Module):
     def __init__(self,config):
@@ -65,6 +101,7 @@ class MultiLayerPerceptron(nn.Module):
         x = self.W2(x)
         return x
 
+
 class Block(nn.Module):
     def __init__(self,config):
         super().__init__()
@@ -74,10 +111,26 @@ class Block(nn.Module):
         self.LN2 = nn.LayerNorm(config.C)
 
     def forward(self,x):
-        x = self.LN1(x + self.attention(x))
-        x = self.LN2(x + self.MLP(x))
+        x = x + self.attention(self.LN1(x))
+        x = x + self.MLP(self.LN2(x))
         return x
 
+
+class GPT(nn.Module):
+    def __init__(self,config):
+        super().__init__()
+        self.Wt = nn.Embedding(config.vocab_size, config.C)
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config.L)])
+        self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
+        self.Wo = nn.Linear(config.C, config.vocab_size)
+
+    def forward(self,x):
+        # x = input sequence (B, T)
+        x = self.Wt(x)
+        for block in self.blocks:
+            x = block(x)
+        x = self.LN(x)
+        return self.Wo(x)
 
 @dataclass
 class GPTConfig:
