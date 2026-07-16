@@ -141,12 +141,11 @@ class FlashAttention(nn.Module):
                 score = q_block @ k_block.transpose(-1,-2) #(B,h,Br,Bc)
                 score /= d ** 0.5
 
-                max_score = torch.amax(score, dim=-1, keepdim=True)
-                m_new = torch.maximum(m,max_score)
+                m_block = torch.amax(score, dim=-1, keepdim=True)
+                m_new = torch.maximum(m, m_block)
 
                 correction = torch.exp(m - m_new)
                 p = torch.exp(score - m_new)
-
                 l = l * correction + p.sum(dim=-1, keepdim=True)
                 o = o * correction + p @ v_block
                 m = m_new
