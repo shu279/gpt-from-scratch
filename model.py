@@ -18,7 +18,6 @@ class CausalSelfAttention(nn.Module):
 
     # Simple self-attention
     def plain_forward(self,x):
-        B, T, C = x.size()
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
         score = q@k.transpose(-1,-2)
         return F.softmax(score,dim=-1)@v
@@ -101,9 +100,64 @@ class MultiLayerPerceptron(nn.Module):
         x = self.W2(x)
         return x
 
+class FlashAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        C = config.C
+        assert config.C % config.h == 0
+        self.h = config.h
+        self.Bc = config.Bc
+        self.Br = config.Br
+
+        self.Wq = nn.Linear(C, C)
+        self.Wk = nn.Linear(C, C)
+        self.Wv = nn.Linear(C, C)
+
+    def forward(self, x):
+        B, T, C = x.size()
+        h = self.h
+        d = C//self.h # Head size
+        Br = self.Br
+        Bc = self.Bc
+
+        q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
+        q = q.view(B, T, h, d).transpose(1,2)
+        k = k.view(B, T, h, d).transpose(1,2)
+        v = v.view(B, T, h, d).transpose(1,2)
+        output = q.new_zeros(B, h, T, d)
+
+        for i in range(0, T, Br):
+            q_block = q[:, :, i:i+Br, :] #(B,h,Br,d)
+            R = q_block.shape[-2]
+
+            m = q_block.new_full((B, h, R, 1), float("-inf"))
+            l = q_block.new_zeros((B, h, R, 1))
+            o = q_block.new_zeros((B, h, R, d))
+
+            for j in range(0, T, Bc):
+                k_block = k[:, :, j:j+Bc, :] #(B,h,Bc,d)
+                v_block = v[:, :, j:j+Bc, :] #(B,h,Bc,d)
+                score = q_block @ k_block.transpose(-1,-2) #(B,h,Br,Bc)
+                score /= d ** 0.5
+
+                max_score = torch.amax(score, dim=-1, keepdim=True)
+                m_new = torch.maximum(m,max_score)
+
+                correction = torch.exp(m - m_new)
+                p = torch.exp(score - m_new)
+
+                l = l * correction + p.sum(dim=-1, keepdim=True)
+                o = o * correction + p @ v_block
+                m = m_new
+
+            output[:, :, i:i+Br, :] = o / l
+
+        return output
+
 
 class Block(nn.Module):
-    def __init__(self,config):
+    def __init__(self, config):
         super().__init__()
         self.attention = CausalSelfAttention(config)
         self.LN1 = nn.LayerNorm(config.C)
@@ -114,7 +168,6 @@ class Block(nn.Module):
         x = x + self.attention(self.LN1(x))
         x = x + self.MLP(self.LN2(x))
         return x
-
 
 class GPT(nn.Module):
     def __init__(self,config):
@@ -140,3 +193,7 @@ class GPTConfig:
     h: int = 8
     L: int = 6
     dropout: float = 0.1
+
+    #Flash attention
+    Bc: int = 4
+    Br: int = 4
