@@ -13,6 +13,7 @@ venv/
 
 # Local datasets, checkpoints, and experiment outputs
 data/
+enwik8
 checkpoints/
 runs/
 *.pt
