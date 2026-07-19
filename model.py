@@ -190,10 +190,10 @@ class Block(nn.Module):
 class GPT(nn.Module):
     def __init__(self,config):
         super().__init__()
-        self.Wt = nn.Embedding(config.vocab_size, config.C)
+        self.Wt = nn.Embedding(config.V, config.C)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.L)])
         self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
-        self.Wo = nn.Linear(config.C, config.vocab_size)
+        self.Wo = nn.Linear(config.C, config.V)
 
     def forward(self,x):
         # x = input sequence (B, T)
@@ -205,7 +205,7 @@ class GPT(nn.Module):
 
 @dataclass
 class GPTConfig:
-    vocab_size: int
+    V: int
     block_size: int
     C: int
     h: int
