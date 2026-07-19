@@ -5,17 +5,12 @@ import torch.nn.functional as F
 from tokenizer import train_bpe, encode, decode
 from model import GPT, GPTConfig
 
+from dataclasses import asdict
+
 '''
-tiktokenなど既存tokenizer
-tokenized datasetのキャッシュ
-device自動選択
-checkpoint保存・再開
-gradient accumulation
-mixed precision
-gradient clipping
-learning-rate schedule
-validation
-generation sample
+Simple implementation of the training loop for educational purpose
+- Using own tokenizer
+- No parallel training
 '''
 
 config = GPTConfig(
@@ -37,12 +32,13 @@ eval_iters = 20
 
 with open("enwik8", "r", encoding="utf-8", newline="") as file:
     text = file.read()
+    text = text[:100_000] #cheaper setting for heavy tokenisation
 
 n = int(len(text) * 0.9)
 train_text = text[:n]
 val_text = text[n:]
 
-merges = train_bpe(train_text[:100000], config.V - 256)
+merges = train_bpe(train_text, config.V - 256)
 train_ids = encode(train_text, merges)
 val_ids = encode(val_text, merges)
 
@@ -65,7 +61,7 @@ def cross_entropy(logits, targets):
     log_softmax = logits - torch.logsumexp(logits, dim=-1, keepdim=True) # (B, T, V)
     log_prob = log_softmax.gather(dim=-1, index=y_ind).squeeze(-1) # (B, T)
     loss = -log_prob.mean()
-    return loss
+    return loss.item()  #item() converts 0 dim tensor to python float
 
 
 # Stabler metric of model performance - not for parameter update/
@@ -116,9 +112,15 @@ for step in range(max_steps):
             f"val {val_loss:.4f}"
         )
 
-
-
-
+# Save model
+checkpoint = {
+    "model": model.state_dict(), # For generation / resume train
+    "optimizer": optimiser.state_dict(), # For resume momentum etc
+    "config": asdict(config),
+    "step": max_steps,
+    "merges": merges,
+}
+torch.save(checkpoint, "checkpoint_simple.pt")
 
     
 

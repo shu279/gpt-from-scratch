@@ -1,5 +1,15 @@
 from collections import Counter
 
+'''
+Simple byte-pair encoding (BPE)
+Handles any word / language by decomposing to utf-8 bytes
+
+Initialize vocabulary with individual bytes
+Repeat until vocabulary reaches the desired size:
+    Find the most frequent adjacent token pair
+    Merge into new token
+'''
+
 # Replace the most frequently occurring pairs of consecutive bytes with new id
 def merge(ids, pair, new_id):
     res = []
@@ -13,7 +23,6 @@ def merge(ids, pair, new_id):
             i += 1
     return res
 
-# Simple byte-pair encoding BPE
 # Output dict of key = ids to merge, value = new id
 def train_bpe(text, num_merges):
     ids = list(text.encode("utf-8"))
@@ -31,7 +40,7 @@ def train_bpe(text, num_merges):
         new_id += 1
     return merges
 
-# Encode train / validation to token ID vector
+# Text to token ID vector
 def encode(text, merges):
     ids = list(text.encode("utf-8"))
 
@@ -39,6 +48,7 @@ def encode(text, merges):
         ids = merge(ids, pair, token_id)
     return ids
 
+# Token ID vector to text
 def decode(ids, merges):
     vocab = {i: bytes([i]) for i in range(256)}
     for pair, token_id in merges.items():
