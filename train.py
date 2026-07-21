@@ -7,6 +7,7 @@ from model import GPT, GPTConfig
 
 from dataclasses import asdict
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
 tokenizer = "o200k_base"
 B = 32
 T = 128
@@ -37,6 +38,7 @@ train, val = tokens[:n], tokens[n:]
 train = torch.tensor(train, dtype=torch.int32)
 val = torch.tensor(val, dtype=torch.int32)
 
+
 # Get random B batches - split = for train or val
 def get_batch(split):
     data = train if split == 'train' else val
@@ -55,7 +57,7 @@ def cross_entropy(logits, targets):
     return loss  #item() converts 0 dim tensor to python float
 
 
-# Stabler metric of model performance - not for parameter update/
+# Stabler metric of model performance - not for parameter update
 def estimate_loss():
     model.eval()
     with torch.no_grad():
@@ -77,7 +79,6 @@ def estimate_loss():
     return train_loss/eval_iters , val_loss/eval_iters
 
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
 model = GPT(config).to(device)
 optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
 

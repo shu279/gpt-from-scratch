@@ -196,12 +196,12 @@ class GPT(nn.Module):
         self.Wo = nn.Linear(config.C, config.V)
 
     def forward(self,x):
-        # x = input sequence (B, T)
-        x = self.Wt(x)
+        # input sequence (B, T)
+        x = self.Wt(x) # (B, T, C)
         for block in self.blocks:
-            x = block(x)
-        x = self.LN(x)
-        return self.Wo(x)
+            x = block(x) # (B, T, C)
+        x = self.LN(x) 
+        return self.Wo(x) # (B, T, V)
 
 @dataclass
 class GPTConfig:
