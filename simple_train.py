@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from simple_tokenizer import train_bpe, encode
-from model import GPT, GPTConfig
+from simple_model import GPT, GPTConfig
 
 from dataclasses import asdict
 

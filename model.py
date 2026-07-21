@@ -10,6 +10,7 @@ class CausalSelfAttention(nn.Module):
         C = config.C
         assert config.C % config.h == 0
         self.h = config.h
+        self.dropout = config.dropout
 
         self.Wq = nn.Linear(C,C)
         self.Wk = nn.Linear(C,C)
@@ -29,19 +30,13 @@ class CausalSelfAttention(nn.Module):
 
         q,k = RoPE(q,k) # Rotate q/k
 
-        score = q@k.transpose(-1,-2) # (B, h, Tq, Tk)
-        score /= (head_size ** 0.5) # Make var = 1 so big C won't get big fluctuation
+        dropout_p=self.dropout if self.training else 0.0
 
-        # Causal mask
-        mask = torch.ones(T, T, dtype=torch.bool, device=x.device) #(1, 1, Tq, Tk)
-        mask = torch.tril(mask)
-        score = score.masked_fill(~mask,float("-inf"))
-
-        c = F.softmax(score,dim=-1)@v # Combine across key positions (B,h,Tq,C//h)
+        c = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=dropout_p) #(B,h,T,head_size)
 
         # Connect head dimensions
-        c = c.transpose(1, 2)
-        c = c.contiguous().view(B, T, C)
+        c = c.transpose(1, 2).contiguous()
+        c = c.view(B, T, C)
 
         return self.Wo(c) # Combine across embedding
 
@@ -101,34 +96,44 @@ class Block(nn.Module):
         self.LN1 = nn.LayerNorm(config.C)
         self.MLP = MultiLayerPerceptron(config)
         self.LN2 = nn.LayerNorm(config.C)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self,x):
-        x = x + self.attention(self.LN1(x))
-        x = x + self.MLP(self.LN2(x))
+        x = x + self.dropout(self.attention(self.LN1(x))) # reduce overfit on attention feature + avoid breaking residual connection
+        x = x + self.dropout(self.MLP(self.LN2(x)))
         return x
 
 
 class GPT(nn.Module):
     def __init__(self,config):
         super().__init__()
+        self.block_size = config.block_size
         self.Wt = nn.Embedding(config.V, config.C)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.L)])
         self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
         self.Wo = nn.Linear(config.C, config.V)
+
+        self.apply(self._init_weights) # default linear/embedding weight is too big  
         self.Wo.weight = self.Wt.weight # Weight tying by sharing weight 
-        self.block_size = config.block_size
 
     def forward(self,x):
-        # input sequence (B, T)
+        B, T = x.shape
+        assert T <= self.block_size
+
         x = self.Wt(x) # (B, T, C)
         for block in self.blocks:
             x = block(x) # (B, T, C)
         x = self.LN(x) 
         return self.Wo(x) # (B, T, V)
     
+    # default linear/embedding weight is too big  
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_
+            nn.init.normal_(module.weight, mean=0, std=0.02)
+            if module.bias is not None: nn.init.zeros_(module.bias)
+
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0, std=0.02)
 
 @dataclass
 class GPTConfig:
