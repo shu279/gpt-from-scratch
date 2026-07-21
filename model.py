@@ -194,6 +194,8 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.L)])
         self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
         self.Wo = nn.Linear(config.C, config.V)
+        self.Wo.weight = self.Wt.weight # Weight tying by sharing weight 
+        self.block_size = config.block_size
 
     def forward(self,x):
         # input sequence (B, T)

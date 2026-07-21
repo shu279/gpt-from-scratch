@@ -8,7 +8,7 @@ from model import GPT, GPTConfig
 from dataclasses import asdict
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = "o200k_base"
+tokenizer = "gpt2"
 B = 32
 T = 128
 max_steps = 100
