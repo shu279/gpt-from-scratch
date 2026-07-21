@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tokenizer import train_bpe, encode, decode
+from simple_tokenizer import train_bpe, encode
 from model import GPT, GPTConfig
 
 from dataclasses import asdict

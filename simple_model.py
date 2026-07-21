@@ -16,6 +16,13 @@ class CausalSelfAttention(nn.Module):
         self.Wv = nn.Linear(C,C)
         self.Wo = nn.Linear(C,C)
 
+    # Simple self-attention
+    def plain_forward(self,x):
+        q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
+        score = q@k.transpose(-1,-2)
+        return F.softmax(score,dim=-1)@v
+
+    # Added causal mask, MHA, RoPE
     def forward(self,x):
         # x = embedding
         B, T, C = x.size()
@@ -79,7 +86,6 @@ def RoPE(q,k):
 
     return q_rotated, k_rotated
 
-
 class MultiLayerPerceptron(nn.Module):
     def __init__(self,config):
         super().__init__()
@@ -92,6 +98,79 @@ class MultiLayerPerceptron(nn.Module):
         x = F.gelu(x)
         x = self.W2(x)
         return x
+
+class FlashAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        C = config.C
+        assert config.C % config.h == 0
+        self.h = config.h
+        self.Bc = config.Bc
+        self.Br = config.Br
+
+        self.Wq = nn.Linear(C, C)
+        self.Wk = nn.Linear(C, C)
+        self.Wv = nn.Linear(C, C)
+        self.Wo = nn.Linear(C, C)
+
+    def forward(self, x):
+        B, T, C = x.size()
+        h = self.h
+        d = C//self.h # Head size
+
+        q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
+
+        # Multi-head attention
+        q = q.view(B, T, h, d).transpose(1,2)
+        k = k.view(B, T, h, d).transpose(1,2)
+        v = v.view(B, T, h, d).transpose(1,2)
+
+        q,k = RoPE(q,k) # Rotate q/k
+
+        output = q.new_zeros(B, h, T, d)
+
+        Br = self.Br
+        for i in range(0, T, Br):
+            q_block = q[:, :, i:i+Br, :] #(B,h,Br,d)
+            Br = q_block.shape[-2]
+
+            m = q_block.new_full((B, h, Br, 1), float("-inf"))
+            l = q_block.new_zeros((B, h, Br, 1))
+            o = q_block.new_zeros((B, h, Br, d))
+
+            Bc = self.Bc
+            for j in range(0, T, Bc):
+                k_block = k[:, :, j:j+Bc, :] #(B,h,Bc,d)
+                v_block = v[:, :, j:j+Bc, :] #(B,h,Bc,d)
+                Bc = k_block.shape[-2]
+
+                score = q_block @ k_block.transpose(-1,-2) #(B,h,Br,Bc)
+                score /= d ** 0.5
+
+                # Causal mask
+                q_pos = torch.arange(Br, device=q.device) + i
+                k_pos = torch.arange(Bc, device=q.device) + j
+                mask = k_pos[None, :] > q_pos[:, None]
+                score = score.masked_fill(mask, float("-inf"))
+
+                m_block = torch.amax(score, dim=-1, keepdim=True) # Find maximum score in block
+                m_new = torch.maximum(m, m_block) # Maximum score globally
+
+                correction = torch.exp(m - m_new) # Rescale for new gloabl maximum score
+                p = torch.exp(score - m_new) # Scores in current block to add
+                l = l * correction + p.sum(dim=-1, keepdim=True)
+                o = o * correction + p @ v_block
+                m = m_new
+
+            output[:, :, i:i+Br, :] = o / l
+
+        # Connect heads back
+        output = output.transpose(1,2).contiguous()
+        output = output.view(B,T,C)
+        output = self.Wo(output)
+
+        return output
 
 
 class Block(nn.Module):
@@ -115,7 +194,6 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.L)])
         self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
         self.Wo = nn.Linear(config.C, config.V)
-        self.Wo.weight = self.Wt.weight # Weight tying by sharing weight 
         self.block_size = config.block_size
 
     def forward(self,x):
@@ -125,10 +203,7 @@ class GPT(nn.Module):
             x = block(x) # (B, T, C)
         x = self.LN(x) 
         return self.Wo(x) # (B, T, V)
-    
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.normal_
+
 
 @dataclass
 class GPTConfig:
@@ -138,7 +213,3 @@ class GPTConfig:
     h: int
     L: int
     dropout: float
-
-    #Flash attention
-    Bc: int
-    Br: int
