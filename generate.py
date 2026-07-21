@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from model import GPT, GPTConfig
+import tiktoken
 
 '''
 checkpointを読む
@@ -20,6 +21,8 @@ checkpoint = torch.load("checkpoint.pt", map_location=device)
 
 config = GPTConfig(**checkpoint["config"])
 
-model = GPT(GPTConfig(**checkpoint["config"])).to(device)
+model = GPT(config).to(device)
 model.load_state_dict(checkpoint["model"])
 model.eval()
+
+enc = tiktoken.get_encoding(checkpoint["tokenizer"])

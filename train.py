@@ -2,13 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tokenizer import train_bpe, encode, decode
+import tiktoken
 from model import GPT, GPTConfig
 
 from dataclasses import asdict
 
+tokenizer = "o200k_base"
+B = 32
+T = 128
+max_steps = 100
+lr = 0.0003
+eval_iters = 20
+
+enc = tiktoken.get_encoding(tokenizer)
+
 config = GPTConfig(
-    V = 500,
+    V = enc.n_vocab,
     block_size = 128,
     C = 256,
     h = 8,
@@ -18,27 +27,15 @@ config = GPTConfig(
     Br = 4,
 )
 
-B = 32
-T = 128
-max_steps = 100
-lr = 0.0003
-eval_iters = 20
-
 with open("enwik8", "r", encoding="utf-8", newline="") as file:
     text = file.read()
-    text = text[:100_000] #cheaper setting for heavy tokenisation
 
-n = int(len(text) * 0.9)
-train_text = text[:n]
-val_text = text[n:]
+tokens = enc.encode(text)
+n = int(len(tokens) * 0.9)
+train, val = tokens[:n], tokens[n:]
 
-merges = train_bpe(train_text, config.V - 256)
-train_ids = encode(train_text, merges)
-val_ids = encode(val_text, merges)
-
-train = torch.tensor(train_ids, dtype=torch.int32)
-val = torch.tensor(val_ids, dtype=torch.int32)
-
+train = torch.tensor(train, dtype=torch.int32)
+val = torch.tensor(val, dtype=torch.int32)
 
 # Get random B batches - split = for train or val
 def get_batch(split):
@@ -112,6 +109,6 @@ checkpoint = {
     "optimizer": optimiser.state_dict(), # For resume momentum etc
     "config": asdict(config),
     "step": max_steps,
-    "merges": merges,
+    "tokenizer": tokenizer,
 }
 torch.save(checkpoint, "checkpoint.pt")
