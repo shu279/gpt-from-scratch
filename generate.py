@@ -1,3 +1,8 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from model import GPT, GPTConfig
 
 '''
 checkpointを読む
@@ -9,5 +14,12 @@ checkpointを読む
 → 繰り返す
 → 全tokenをdecode
 '''
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-checkpoint
+checkpoint = torch.load("checkpoint.pt", map_location=device)
+
+config = GPTConfig(**checkpoint["config"])
+
+model = GPT(GPTConfig(**checkpoint["config"])).to(device)
+model.load_state_dict(checkpoint["model"])
+model.eval()

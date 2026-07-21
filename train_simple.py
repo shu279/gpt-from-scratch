@@ -61,7 +61,7 @@ def cross_entropy(logits, targets):
     log_softmax = logits - torch.logsumexp(logits, dim=-1, keepdim=True) # (B, T, V)
     log_prob = log_softmax.gather(dim=-1, index=y_ind).squeeze(-1) # (B, T)
     loss = -log_prob.mean()
-    return loss.item()  #item() converts 0 dim tensor to python float
+    return loss
 
 
 # Stabler metric of model performance - not for parameter update/
@@ -74,13 +74,13 @@ def estimate_loss():
             x,y = x.to(device),y.to(device)
 
             logits = model(x)
-            train_loss += cross_entropy(logits, y)
+            train_loss += cross_entropy(logits, y).item() #item() converts 0 dim tensor to python float
         
             x,y = get_batch('val')
             x,y = x.to(device),y.to(device)
 
             logits = model(x)
-            val_loss += cross_entropy(logits, y)
+            val_loss += cross_entropy(logits, y).item()
     
     model.train()
     return train_loss/eval_iters , val_loss/eval_iters
@@ -121,11 +121,3 @@ checkpoint = {
     "merges": merges,
 }
 torch.save(checkpoint, "checkpoint_simple.pt")
-
-    
-
-
-    
-
-
-
