@@ -115,6 +115,7 @@ class GPT(nn.Module):
 
         self.apply(self._init_weights) # default linear/embedding weight is too big  
         self.Wo.weight = self.Wt.weight # Weight tying by sharing weight 
+        self.L = config.L
 
     def forward(self,x):
         B, T = x.shape
@@ -129,11 +130,11 @@ class GPT(nn.Module):
     # default linear/embedding weight is too big  
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0, std=0.02)
+            nn.init.normal_(module.weight, mean=0, std=0.02 / F.sqrt(2 * self.L)) #prevent residual stream variance grow
             if module.bias is not None: nn.init.zeros_(module.bias)
 
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0, std=0.02)
+            nn.init.normal_(module.weight, mean=0, std=0.02 / F.sqrt(2 * self.L))
 
 @dataclass
 class GPTConfig:

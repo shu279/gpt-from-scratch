@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 import tiktoken
 from model import GPT, GPTConfig
@@ -24,7 +25,7 @@ B = 24
 T = config.block_size
 lr = 0.0003
 eval_iters = 10
-eval_interval = 100
+eval_interval = 200
 
 with open("enwik8", "r", encoding="utf-8", newline="") as file:
     text = file.read()
@@ -36,7 +37,21 @@ train, val = tokens[:n], tokens[n:]
 train = torch.tensor(train, dtype=torch.int32)
 val = torch.tensor(val, dtype=torch.int32)
 
-max_steps = (3*n) // (B*T) # Able to see every data roughly 3 times 
+max_steps = (3*n) // (B*T) # Able to see every data roughly 3 times - (3 * 26112214) / 12288 ~= 6400
+
+
+model = GPT(config).to(device)
+optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
+best_val_loss = float("inf")
+
+checkpoint = {
+    "model": model.state_dict(), # For generation / resume train
+    "optimizer": optimiser.state_dict(), # For resume momentum etc
+    "config": asdict(config),
+    "step": max_steps,
+    "tokenizer": tokenizer,
+}
+
 
 # Get random B batches - split = for train or val
 def get_batch(split):
@@ -45,15 +60,6 @@ def get_batch(split):
     x = torch.stack([data[i : i+T] for i in ind])
     y = torch.stack([data[i+1 : i+T+1] for i in ind])
     return x.long(), y.long() #for cross entropy
-
-
-# Find cross entropy for loss
-def cross_entropy(logits, targets):
-    y_ind = targets.unsqueeze(-1) # (B, T, 1)
-    log_softmax = logits - torch.logsumexp(logits, dim=-1, keepdim=True) # (B, T, V)
-    log_prob = log_softmax.gather(dim=-1, index=y_ind).squeeze(-1) # (B, T)
-    loss = -log_prob.mean()
-    return loss  #item() converts 0 dim tensor to python float
 
 
 # Stabler metric of model performance - not for parameter update
@@ -66,20 +72,22 @@ def estimate_loss():
             x,y = x.to(device),y.to(device)
 
             logits = model(x)
-            train_loss += cross_entropy(logits, y).item()
+            train_loss += F.cross_entropy(logits.view(-1, config.V), y.view(-1)).item()
         
             x,y = get_batch('val')
             x,y = x.to(device),y.to(device)
 
             logits = model(x)
-            val_loss += cross_entropy(logits, y).item()
+            val_loss +=  F.cross_entropy(logits.view(-1, config.V), y.view(-1)).item()
+
+            # save checkpoint when val loss improve
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(checkpoint, "checkpoint.pt")
     
     model.train()
     return train_loss/eval_iters , val_loss/eval_iters
 
-
-model = GPT(config).to(device)
-optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
 
 # Gradient descent
 for step in range(max_steps):
@@ -90,7 +98,7 @@ for step in range(max_steps):
     logits = model(x) # (B, T, V)
 
     optimiser.zero_grad(set_to_none=True) # Do not accumlate gardient, just use per step gradient
-    loss = cross_entropy(logits, y)
+    loss = F.cross_entropy(logits.view(-1, config.V), y.view(-1))
     loss.backward()
     optimiser.step()
 
@@ -103,12 +111,6 @@ for step in range(max_steps):
             f"val {val_loss:.4f}"
         )
 
-# Save model
-checkpoint = {
-    "model": model.state_dict(), # For generation / resume train
-    "optimizer": optimiser.state_dict(), # For resume momentum etc
-    "config": asdict(config),
-    "step": max_steps,
-    "tokenizer": tokenizer,
-}
 torch.save(checkpoint, "checkpoint.pt")
+
+print("Training is finished!")
