@@ -9,5 +9,5 @@ Practical implementation
 
 Simple implementation
 - `simple_model.py`: GPT with handwritten causal attention and FlashAttention
-- `simple_tokenizer.py`: byte-level BPE tokenizer
 - `simple_train.py`: training loop
+- `simple_tokenizer.py`: byte-level BPE tokenizer

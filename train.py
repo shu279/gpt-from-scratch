@@ -1,32 +1,30 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 import tiktoken
 from model import GPT, GPTConfig
 
 from dataclasses import asdict
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
 tokenizer = "gpt2"
-B = 32
-T = 128
-max_steps = 100
-lr = 0.0003
-eval_iters = 20
-
 enc = tiktoken.get_encoding(tokenizer)
 
 config = GPTConfig(
     V = enc.n_vocab,
-    block_size = 128,
-    C = 256,
+    block_size = 512,
+    C = 512,
     h = 8,
-    L = 6,
+    L = 8,
     dropout = 0.1,
     Bc = 4,
     Br = 4,
 )
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+B = 24
+T = config.block_size
+lr = 0.0003
+eval_iters = 10
+eval_interval = 100
 
 with open("enwik8", "r", encoding="utf-8", newline="") as file:
     text = file.read()
@@ -38,6 +36,7 @@ train, val = tokens[:n], tokens[n:]
 train = torch.tensor(train, dtype=torch.int32)
 val = torch.tensor(val, dtype=torch.int32)
 
+max_steps = (3*n) // (B*T) # Able to see every data roughly 3 times 
 
 # Get random B batches - split = for train or val
 def get_batch(split):
@@ -96,7 +95,7 @@ for step in range(max_steps):
     optimiser.step()
 
     # Check model performance
-    if step % 10 == 0:
+    if step % eval_interval == 0:
         train_loss, val_loss = estimate_loss()
         print(
             f"step {step}: "
