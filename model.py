@@ -144,7 +144,3 @@ class GPTConfig:
     h: int
     L: int
     dropout: float
-
-    #Flash attention
-    Bc: int
-    Br: int

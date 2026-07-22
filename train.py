@@ -26,6 +26,8 @@ T = config.block_size
 lr = 0.0003
 eval_iters = 10
 eval_interval = 200
+weight_decay = 0.1
+best_val_loss = float("inf")
 
 with open("enwik8", "r", encoding="utf-8", newline="") as file:
     text = file.read()
@@ -39,10 +41,17 @@ val = torch.tensor(val, dtype=torch.int32)
 
 max_steps = (3*n) // (B*T) # Able to see every data roughly 3 times - (3 * 26112214) / 12288 ~= 6400
 
-
 model = GPT(config).to(device)
-optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
-best_val_loss = float("inf")
+
+decay_params = [p for p in model.parameters() if p.dim() >= 2] # ≥2 dim weights
+nodecay_params = [p for p in model.parameters() if p.dim() < 2] # bias and layernorm
+
+optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+
+optimiser = torch.optim.AdamW(optim_groups, lr=lr)
 
 checkpoint = {
     "model": model.state_dict(), # For generation / resume train
