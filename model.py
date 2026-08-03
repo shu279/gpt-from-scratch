@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
+import math
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -17,7 +18,7 @@ class CausalSelfAttention(nn.Module):
         self.Wv = nn.Linear(C,C)
         self.Wo = nn.Linear(C,C)
 
-    def forward(self,x):
+    def forward(self,x, past_kv=None, use_cache=False):
         # x = embedding
         B, T, C = x.size()
         q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
@@ -28,21 +29,37 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.h, head_size).transpose(1, 2)
         v = v.view(B, T, self.h, head_size).transpose(1, 2)
 
-        q,k = RoPE(q,k) # Rotate q/k
+        # Check past T - how much kv are cached
+        past_length = 0
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            past_length = past_k.size(2)
+            assert T == 1 # When using past_kv, T must be 1 in inference
+
+        q,k = RoPE(q,k, offset=past_length) # Rotate q/k
+
+        # Add past key/value for inference
+        if past_kv is not None:
+            k = torch.cat((past_k, k), dim=2)
+            v = torch.cat((past_v, v), dim=2)
 
         dropout_p=self.dropout if self.training else 0.0
 
-        c = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=dropout_p) #(B,h,T,head_size)
+        c = F.scaled_dot_product_attention(q, k, v, is_causal=past_kv is None, dropout_p=dropout_p) #(B,h,T,head_size)
 
         # Connect head dimensions
         c = c.transpose(1, 2).contiguous()
         c = c.view(B, T, C)
 
-        return self.Wo(c) # Combine across embedding
+        output = self.Wo(c) # Combine across embedding
+        if use_cache:
+            return output, (k, v)
+
+        return output
 
 
 # Rotate q/k according to token position -> learn relationship by relative position
-def RoPE(q,k):
+def RoPE(q,k, offset=0):
     B, h, T, head_size = q.shape
     assert head_size % 2 == 0
 
@@ -56,7 +73,7 @@ def RoPE(q,k):
     # pair 1 -> 0.10 rad per position
     # pair 2 -> 0.01 rad per position --> sensitive for coarse s-t change
 
-    pos = torch.arange(0, T, device = q.device)
+    pos = torch.arange(offset, offset + T, device = q.device)
     pair_idx = torch.arange(0, head_size//2, device = q.device)
     freq = 1 / (10000 ** (2 * pair_idx / head_size))
 
@@ -98,9 +115,21 @@ class Block(nn.Module):
         self.LN2 = nn.LayerNorm(config.C)
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self,x):
-        x = x + self.dropout(self.attention(self.LN1(x))) # reduce overfit on attention feature + avoid breaking residual connection
+    # Adapted for kv caching
+    def forward(self,x, past_kv=None, use_cache=False):
+        attn_res = self.attention(self.LN1(x), past_kv=past_kv, use_cache=use_cache)
+
+        if use_cache:
+            attn_res, kv = attn_res
+        else:
+            kv = None
+
+        x = x + self.dropout(attn_res) # reduce overfit on attention feature + avoid breaking residual connection
         x = x + self.dropout(self.MLP(self.LN2(x)))
+
+        if use_cache:
+            return x, kv
+
         return x
 
 
@@ -113,28 +142,51 @@ class GPT(nn.Module):
         self.LN = nn.LayerNorm(config.C) #Remove fluctuation by repeated residual connection
         self.Wo = nn.Linear(config.C, config.V)
 
-        self.apply(self._init_weights) # default linear/embedding weight is too big  
-        self.Wo.weight = self.Wt.weight # Weight tying by sharing weight 
         self.L = config.L
+        self.apply(self._init_weights) # default linear/embedding weight is too big
+        self.Wo.weight = self.Wt.weight # Weight tying by sharing weight
 
-    def forward(self,x):
+    # Adapted for kv caching
+    def forward(self, x, past_kvs=None, use_cache=False):
         B, T = x.shape
         assert T <= self.block_size
 
+
+        if past_kvs is None:
+            past_kvs = [None] * self.L
+        else:
+            assert len(past_kvs) == self.L
+            past_length = past_kvs[0][0].size(2)
+            assert T + past_length <= self.block_size
+
         x = self.Wt(x) # (B, T, C)
-        for block in self.blocks:
-            x = block(x) # (B, T, C)
+        kv = []
+
+        for block, past_kv in zip(self.blocks, past_kvs):
+            x = block(x, past_kv=past_kv, use_cache=use_cache) # (B, T, C)
+            if use_cache:
+                x, new_kv = x
+                kv.append(new_kv)
+            else:
+                kv.append(None)
+
         x = self.LN(x) 
-        return self.Wo(x) # (B, T, V)
+        logits = self.Wo(x) # (B, T, V)
+
+        if use_cache:
+            return logits, kv
+
+        return logits
+
     
     # default linear/embedding weight is too big  
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0, std=0.02 / F.sqrt(2 * self.L)) #prevent residual stream variance grow
+            nn.init.normal_(module.weight, mean=0, std=0.02 / math.sqrt(2 * self.L)) #prevent residual stream variance grow
             if module.bias is not None: nn.init.zeros_(module.bias)
 
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0, std=0.02 / F.sqrt(2 * self.L))
+            nn.init.normal_(module.weight, mean=0, std=0.02 / math.sqrt(2 * self.L))
 
 @dataclass
 class GPTConfig:

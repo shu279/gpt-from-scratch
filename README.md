@@ -3,7 +3,7 @@
 A small GPT implementation built from scratch.
 
 Practical implementation
-- `model.py`: GPT with RoPE and PyTorch SDPA
+- `model.py`: GPT with RoPE and KV cache
 - `train.py`: training pipeline using tiktoken
 - `generate.py`: autoregressive text generation from a checkpoint
 
